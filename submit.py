@@ -25,7 +25,7 @@ from typing import Union, Optional, List
 from itertools import product
 from queue import PriorityQueue
 
-from cfd_toolbox import utils
+from . import utils
 
 __all__ = ['FluentQuest', 'CFDPostQuest', 'QuestManager']
 

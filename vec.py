@@ -13,7 +13,7 @@ import quaternion as qua
 from scipy.optimize import fsolve, root_scalar
 import scipy.interpolate as interpolate
 
-from cfd_toolbox.cpp import PyCubicSpline
+from .cpp import PyCubicSpline
 
 __all__ = ['three_point_to_normal', 'vector_to_quaternion', 'offset_space', 'offset_space_nd',
            'func_space_2d', 'func_space_3d', 'ThirdPoly', 'QuasiBezier', 'BSpline', 'CubicSpline']
