@@ -1,0 +1,12 @@
+; 参数化fluent脚本模板
+rc {ROOTPATH}/ejector.cas.h5
+/define/boundary-conditions/set/pressure-inlet/inlet () p0 n {inlet_p} supersonic-or-initial-gauge-pressure n 3e6 t0 n {inlet_t} q
+/define/boundary-conditions/set/pressure-outlet/outlet () gauge-pressure n {outlet_p} t0 n {outlet_t} q
+/file/auto-save/root-name SYS
+/solve/initialize/hyb-initialization
+/solve/set/ri 1
+/file/auto-save/data-frequency 200
+/solve/iterate 2000
+/file/write-case-data/ejector-end.cas.h5 y
+exit
+yes

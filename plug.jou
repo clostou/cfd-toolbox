@@ -1,0 +1,12 @@
+; 参数化fluent脚本模板
+rc {ROOTPATH}/plugNozzle.cas.h5
+/define/boundary-conditions/set/pressure-inlet/inlet () p0 n {inlet_p} supersonic-or-initial-gauge-pressure n 3e6 t0 n {inlet_t} q
+/define/parameters/input-parameters/edit pe pe {atmo_p}
+/file/auto-save/root-name SYS
+/solve/initialize/hyb-initialization
+/solve/set/ri 1
+/file/auto-save/data-frequency 300
+/solve/iterate 3000
+/file/write-case-data/plugNozzle-end.cas.h5 y
+exit
+yes
