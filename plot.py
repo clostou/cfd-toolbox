@@ -13,7 +13,7 @@ import seaborn as sns
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-from . import utils
+from cfd_toolbox import utils
 
 __all__ = ['plt', 'sns', 'func_plot', 'plot', 'plot_frame', 'corr']
 
