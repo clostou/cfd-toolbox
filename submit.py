@@ -21,13 +21,13 @@ import time
 import re
 
 from pathlib import Path
-from typing import Union, Optional, List
+from typing import Any, Union, Optional, List
 from itertools import product
 from queue import PriorityQueue
 
 from . import utils
 
-__all__ = ['FluentQuest', 'CFDPostQuest', 'QuestManager']
+__all__ = ['CustomQuest', 'FluentQuest', 'CFDPostQuest', 'QuestManager']
 
 # sys.stderr = sys.stdout
 
@@ -102,6 +102,9 @@ class BaseScript:
             params.update(params_dict)
         content = self._raw[:]
         for k in set(re.findall('''(?<={)[a-zA-Z][a-zA-Z0-9_]*(?=})''', self._raw)):
+            if params[k] is None:
+                raise ValueError("Find none value of script parameter '%s', " % k,
+                                 "please be sure all parameters have be set correctly before getting script content")
             content = content.replace('{%s}' % k, str(params[k]))
         return content
 
@@ -208,6 +211,58 @@ class BaseQuest:
         return 0
 
 
+class CustomQuest(BaseQuest):
+    """
+    自定义任务组
+
+    通过指定可执行文件和多组命令行参数的形式定义子任务
+    """
+
+    def __init__(self, work_path: Any, exe_path: Any, exe_args: List = None, sub_dirs: List = None,
+                 thread_n: int = 1, priority: int = 100):
+        super(CustomQuest, self).__init__(Path(exe_path),
+                                          Path(work_path),
+                                          thread_n,
+                                          priority)
+        # 所有子任务的根路径（sub_dirs中相对路径的参考）
+        self.base_path = self.work_path
+        # 创建任务列表
+        if exe_args is None:
+            self.job_list = [(str(exe_path), '')]
+        else:
+            if sub_dirs is None:
+                self.job_list = [(f"{exe_path:s} {arg:s}", '') for arg in exe_args]
+            else:
+                if len(exe_args) != len(sub_dirs):
+                    raise ValueError("Length of 'exe_args' and 'sub_dirs' must be equal")
+                self.job_list = [(f"{exe_path:s} {arg:s}", str(dir)) for arg, dir in zip(exe_args, sub_dirs)]
+
+    def __iter__(self):
+        # 计数器归零
+        self._ind = 0
+        # 将当前工作路径重置为根目录
+        self.work_path = self.base_path
+        # 每次迭代过程中确保子任务列表不变
+        self._job_list = self.job_list.copy()
+        return self
+
+    def __next__(self):
+        if self._ind >= len(self._job_list):
+            raise StopIteration
+        cmd, dir = self._job_list[self._ind]
+        self.work_path = os.path.join(self.base_path, dir)
+        ret = self._ind, cmd
+        self._ind += 1
+        return ret
+
+    def __len__(self):
+        return len(self.job_list)
+
+    def __repr__(self):
+        info = f"Total {len(self.job_list)} Custom Jobs on '{self.base_path}'"
+        return info
+
+
 class FluentQuest(BaseQuest):
     """
     Fluent参数化任务组，通过含参数的Fluent脚本文件定义任务的具体操作
@@ -276,17 +331,44 @@ class FluentQuest(BaseQuest):
                                 line))
                 if file in pic_file:
                     cuts = file.split('.')
-                    new_file = ''.join(cuts[: -1]) + f'-{job_dir}.' + cuts[-1]
+                    new_file = '.'.join(cuts[: -1]) + f'-{job_dir}.' + cuts[-1]
                     utils.copy_file(pic_dir / new_file, path)
             if not has_result:
                 if fw.tell() == 0:
                     column_tag = ['index'] + self.params
                     fw.write(','.join(column_tag) + '\n')
                 fw.write('%d %s\n' % (i + 1, ' '.join(map(str, self._job_list[i]))))
+        fw.close()
+
+    def get_xyplot(self, xyplot_file):
+        """指定文件名，可将xy数据文件收集至任务根目录"""
+        fw = open(self.base_path / xyplot_file, 'w', encoding='utf-8')
+        for i, job_dir in enumerate(self._job_dir_list):
+            x_list, y_list = [], []
+            for file in os.listdir(job_dir):
+                path = job_dir / file
+                if os.path.isdir(path):
+                    continue
+                if file == xyplot_file:
+                    with open(path, 'r', encoding='utf-8') as fr:
+                        for _ in range(4):
+                            line = fr.readline()
+                        while True:
+                            line = fr.readline().strip()
+                            if line == ')':
+                                break
+                            x, y = line.split('\t')  # 字符串格式
+                            x_list.append(x)
+                            y_list.append(y)
+            fw.write(' '.join(x_list) + '\n')
+            fw.write(' '.join(y_list) + '\n')
+        fw.close()
 
     def __iter__(self):
         # 计数器归零
         self._ind = 0
+        # 将当前工作路径重置为根目录
+        self.work_path = self.base_path
         # 每次迭代过程中确保子任务列表不变
         self._job_list = list(self.job_list)
         self._job_list.sort()
@@ -304,8 +386,8 @@ class FluentQuest(BaseQuest):
         output_path = self.work_path / 'fluent.out'
         self._job_dir_list.append(self.work_path)
         ret = self._ind, \
-            f'"{self.exe_path}" {self.solver} -g -t{self.thread_n} -pinfiniband -mpi=intel -ssh' + \
-            f' < {script_path} > {output_path} 2>&1'
+            f'"{self.exe_path}" {self.solver} -g -t{self.thread_n} -mpi=intel -ssh' + \
+            f' < {script_path} > {output_path} 2>&1'  # -pinfiniband
         self._ind += 1
         return ret
 
@@ -321,11 +403,14 @@ class FluentQuest(BaseQuest):
 
 
 class CFDPostQuest(BaseQuest):
+    """
+    CFD-Post参数化任务组，通过含参数的脚本文件定义任务的具体操作
+    """
 
     def __init__(self, cfdpost_path, script_path, priority=100):
         super(CFDPostQuest, self).__init__(Path(cfdpost_path),
-                                            Path(os.path.dirname(script_path)),
-                                            1, priority)
+                                           Path(os.path.dirname(script_path)),
+                                           1, priority)
         # cfdpost脚本模板所在路径（所有子任务的根路径）
         self.base_path = self.work_path
         # cfdpost脚本模板
@@ -334,14 +419,29 @@ class CFDPostQuest(BaseQuest):
         self.job_list = []
         # 参数列表（每个data文件的文件夹名，即可能参数）
         self.params = []
+        # 常量参数列表
+        self.constant = list(self.script._get_params().keys())
+        # CFDPost脚本保留参数（单独指定）：子任务根路径、data文件名
+        self.constant.remove('ROOTPATH')
+        self.constant.remove('DATAFILE')
 
-    def set_datafile(self, prefix='-end.dat.h5'):
+    def set_params(self, **kwargs):
+        """定义常量参数的值"""
+        constant = {}
+        for param in self.constant:
+            value = kwargs.get(param)
+            if value == None:
+                raise KeyError("unspecified parameter '%s'" % param)
+            constant[param] = value
+        self.script._update_params(constant)
+
+    def set_datafile(self, suffix='-end.dat.h5'):
         self.job_list.clear()
         self.params.clear()
         for root, dirs, files in os.walk(self.base_path):
             files.sort(reverse=True)
             for f in files:
-                if f.endswith(prefix):
+                if f.endswith(suffix):
                     self.job_list.append(os.path.join(root, f))
                     mid_dir = root.replace('\\', '/').replace(str(self.base_path).replace('\\', '/'), '')[1: ]
                     self.params.append(mid_dir.replace('/', '_'))
@@ -378,6 +478,8 @@ class CFDPostQuest(BaseQuest):
     def __iter__(self):
         # 计数器归零
         self._ind = 0
+        # 将当前工作路径重置为根目录
+        self.work_path = self.base_path
         # 每次迭代过程中确保子任务列表不变
         self._job_list = self.job_list.copy()
         self._params = self.params.copy()
@@ -388,7 +490,7 @@ class CFDPostQuest(BaseQuest):
             raise StopIteration
         data_file_path = self._job_list[self._ind]
         self.work_path = Path(os.path.dirname(data_file_path))
-        self.script._update_params({'ROOTPATH': self.work_path,
+        self.script._update_params({'ROOTPATH': self.work_path.as_posix(),  # 不使用反斜杠
                                     'DATAFILE': os.path.basename(data_file_path)})
         script_path = self.script._to_file(self.work_path)
         output_path = self.work_path / 'cfdpost.out'
@@ -422,6 +524,8 @@ class QuestManager(threading.Thread):
         self.discard_quest = set()
         self.parallel_n = parallel_n
         self.running = False
+        # 实时显示的任务组的id
+        self.state_single_id = None
 
     def run(self):
         self.running = True
@@ -470,8 +574,7 @@ class QuestManager(threading.Thread):
                         job_i, cmd = next(quest)
                         quest_info['state'] = 'R:%s/%s' % (job_i + 1, len(quest))
                         #print(shlex.split(cmd.replace('\\', '/')))
-                        p = subprocess.Popen(cmd.replace('\\', '/'),
-                                             shell=True, cwd=quest.work_path,
+                        p = subprocess.Popen(cmd.replace('\\', '/'), shell=True, cwd=quest.work_path,
                                              universal_newlines=None, stderr=subprocess.STDOUT)
                         running_quest[ind][1] = p
                     except StopIteration:
@@ -553,6 +656,34 @@ class QuestManager(threading.Thread):
             print(f"{ind:>4d} {quest:>16s} {len(info['jobs']):>8d} {info['thread']:>10d}"
                   f"{duration:>16s} {info['state']:>12s}")
 
+    def state_single(self, quest_id) -> bool:
+        """统计队列中单个任务组的状态，支持单行实时显示"""
+        info = self.quest_info[quest_id - 1]
+        state = info['state']
+        if info['worker'] > 1:
+            quest = info['quest'] + ' x%d' % info['worker']
+        else:
+            quest = info['quest']
+        if info['duration'] < 0:
+            duration = utils.sec2str(time.time() + info['duration'])
+        elif info['duration'] > 0:
+            duration = utils.sec2str(info['duration'])
+        else:
+            duration = '-'
+        string = f"{quest_id:>4d} {quest:>16s} {len(info['jobs']):>8d} " + \
+                 f"{info['thread']:>10d} {duration:>16s} {state:>12s}"
+        if self.state_single_id != quest_id:
+            print("{:>4s} {:>16s} {:>8s} {:>10s} {:>16s} {:>12s}".format(
+                "##", "Quest", "Jobs", "Threads", "Duration ", "State "))
+            self.state_single_id = quest_id
+        if state.startswith('R') or state == 'Q':
+            print('\r' + string, end='', flush=True)
+            return True
+        else:
+            print('\r' + string)
+            self.state_single_id = None
+            return False
+
     def info(self, quest_id):
         """列出单个任务的详细信息"""
         print(utils.dict_disp(self.quest_info[quest_id - 1]))
@@ -581,12 +712,14 @@ if __name__ == '__main__':
     # 根据参数化脚本创建cfdpost任务组
     task_2 = CFDPostQuest('/public/software/ansys_inc211/v211/CFD-Post/bin/cfdpost',
                           '/public/home/liugq/Fluent/plug/allParam/plug.cse')
+    # 设置后处理脚本中用到的常量
+    task_2.set_params(gamma_R=470.509)
     # 通过搜索目录下的data文件来创建子任务
-    task_2.set_datafile(prefix='-end.dat.h5')
+    task_2.set_datafile(suffix='-end.dat.h5')
     # 由于cfdpost为单进程，可通过分配多条队列进程来实现并行
     q.submit(task_2, worker_n=16)
     # 自动从收集整理子任务的计算结果和云图等
-    task.get_result('result.txt', 'machNumber.png')
+    task_2.get_result('result.txt', 'machNumber.png')
 
     # 查看队列状态
     q.state()
